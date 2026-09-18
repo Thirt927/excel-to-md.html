@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Excel → Markdown 转换器</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root {
+  --primary: #4a90d9;
+  --primary-dark: #357abd;
+  --bg: #f5f6fa;
+  --card: #fff;
+  --border: #e0e0e0;
+  --text: #333;
+  --text-light: #666;
+  --text-muted: #999;
+  --success: #52c41a;
+  --error: #f5222d;
+  --radius: 8px;
+  --shadow: 0 2px 12px rgba(0,0,0,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 24px;
+}
+.container { max-width: 1100px; margin: 0 auto; }
+
+/* Header */
+.header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+.header h1 {
+  font-size: 28px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.header h1 span { color: var(--primary); }
+.header p { color: var(--text-muted); font-size: 14px; }
+
+/* Drop Zone */
+.dropzone {
+  background: var(--card);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 48px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 20px;
+}
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--primary);
+  background: #f0f7ff;
+}
+.dropzone .icon { font-size: 48px; margin-bottom: 12px; }
+.dropzone .text { font-size: 16px; color: var(--text-light); }
+.dropzone .hint { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+}
+.file-info .name {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.file-info .clear-btn {
+  border: none;
+  background: #f0f0f0;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.file-info .clear-btn:hover { background: #f5222d; color: #fff; }
+.spacer { flex: 1; }
+
+/* Sheet Tabs */
+.sheet-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.sheet-tab {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-light);
+  border-bottom: none;
+}
+.sheet-tab.active {
+  background: var(--card);
+  color: var(--primary);
+  font-weight: 600;
+  border-color: var(--border);
+  border-bottom: 1px solid var(--card);
+  position: relative;
+  z-index: 1;
+}
+
+/* Options */
+.options-panel {
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.option-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-light);
+}
+.option-group label { cursor: pointer; user-select: none; }
+.option-group input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.option-group select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* Output Area */
+.output-area {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 800px) {
+  .output-area { grid-template-columns: 1fr; }
+}
+.output-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fafbfc;
+}
+.output-header .title { font-weight: 600; font-size: 14px; }
+.output-header .actions { display: flex; gap: 6px; }
+.action-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-light);
+  transition: all 0.15s;
+}
+.action-btn:hover { border-color: var(--primary); color: var(--primary); }
+.action-btn.primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.action-btn.primary:hover { background: var(--primary-dark); }
+.action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Markdown Source */
+.md-source {
+  flex: 1;
+  padding: 14px;
+  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre;
+  color: var(--text);
+  max-height: 500px;
+  min-height: 200px;
+}
+.md-source.empty {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Markdown Preview */
+.md-preview {
+  flex: 1;
+  padding: 14px;
+  overflow: auto;
+  max-height: 500px;
+  min-height: 200px;
+}
+.md-preview.empty {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.md-preview table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.md-preview th, .md-preview td {
+  border: 1px solid #d0d0d0;
+  padding: 6px 12px;
+  text-align: left;
+}
+.md-preview th { background: #f0f7ff; font-weight: 600; }
+.md-preview tr:nth-child(even) td { background: #fafafa; }
+
+/* Stats */
+.stats-bar {
+  display: flex;
+  gap: 16px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: #fafbfc;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--text);
+  color: #fff;
+  padding: 10px 24px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  transition: transform 0.3s;
+  z-index: 9999;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.success { background: var(--success); }
+.toast.error { background: var(--error); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Excel → <span>Markdown</span> 转换器</h1>
+    <p>支持 .xlsx / .xls / .csv，纯本地处理，数据不上传</p>
+  </div>
+
+  <!-- Drop Zone -->
+  <div class="dropzone" id="dropzone">
+    <div class="icon">📄</div>
+    <div class="text">点击或拖拽 Excel 文件到此处</div>
+    <div class="hint">支持 .xlsx, .xls, .csv 格式</div>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none">
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar" id="toolbar" style="display:none">
+    <div class="file-info">
+      <span>📁</span>
+      <span class="name" id="fileName"></span>
+      <button class="clear-btn" id="clearBtn" title="清除">✕</button>
+    </div>
+    <div class="spacer"></div>
+  </div>
+
+  <!-- Sheet Tabs -->
+  <div class="sheet-tabs" id="sheetTabs" style="display:none"></div>
+
+  <!-- Options -->
+  <div class="options-panel" id="optionsPanel" style="display:none">
+    <div class="option-group">
+      <input type="checkbox" id="optHeader" checked>
+      <label for="optHeader">第一行作为表头</label>
+    </div>
+    <div class="option-group">
+      <label>对齐方式:</label>
+      <select id="optAlign">
+        <option value="left">左对齐</option>
+        <option value="center">居中</option>
+        <option value="right">右对齐</option>
+      </select>
+    </div>
+    <div class="option-group">
+      <input type="checkbox" id="optStripEmpty" checked>
+      <label for="optStripEmpty">过滤空行</label>
+    </div>
+    <div class="option-group">
+      <input type="checkbox" id="optStripEmptyCols">
+      <label for="optStripEmptyCols">过滤空列</label>
+    </div>
+    <div class="option-group">
+      <label>空单元格填充:</label>
+      <input type="text" id="optEmptyFill" value="-" style="width:40px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px">
+    </div>
+  </div>
+
+  <!-- Output -->
+  <div class="output-area" id="outputArea" style="display:none">
+    <div class="output-card">
+      <div class="output-header">
+        <span class="title">Markdown 源码</span>
+        <div class="actions">
+          <button class="action-btn" id="copyBtn">📋 复制</button>
+          <button class="action-btn primary" id="downloadBtn">⬇ 下载 .md</button>
+        </div>
+      </div>
+      <div class="md-source empty" id="mdSource">转换结果将显示在这里</div>
+      <div class="stats-bar" id="statsBar"></div>
+    </div>
+    <div class="output-card">
+      <div class="output-header">
+        <span class="title">预览</span>
+      </div>
+      <div class="md-preview empty" id="mdPreview">预览将显示在这里</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  "use strict";
+
+  var workbook = null;
+  var currentSheet = null;
+  var currentData = null;
+  var fileName = "";
+
+  // ===== Elements =====
+  var dropzone = document.getElementById("dropzone");
+  var fileInput = document.getElementById("fileInput");
+  var toolbar = document.getElementById("toolbar");
+  var fileNameEl = document.getElementById("fileName");
+  var clearBtn = document.getElementById("clearBtn");
+  var sheetTabs = document.getElementById("sheetTabs");
+  var optionsPanel = document.getElementById("optionsPanel");
+  var outputArea = document.getElementById("outputArea");
+  var mdSource = document.getElementById("mdSource");
+  var mdPreview = document.getElementById("mdPreview");
+  var statsBar = document.getElementById("statsBar");
+  var toast = document.getElementById("toast");
+
+  // ===== Events =====
+  dropzone.addEventListener("click", function() { fileInput.click(); });
+  fileInput.addEventListener("change", function(e) {
+    if (e.target.files[0]) handleFile(e.target.files[0]);
+  });
+
+  dropzone.addEventListener("dragover", function(e) {
+    e.preventDefault();
+    dropzone.classList.add("dragover");
+  });
+  dropzone.addEventListener("dragleave", function() {
+    dropzone.classList.remove("dragover");
+  });
+  dropzone.addEventListener("drop", function(e) {
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+  });
+
+  clearBtn.addEventListener("click", clearAll);
+
+  document.getElementById("optHeader").addEventListener("change", render);
+  document.getElementById("optAlign").addEventListener("change", render);
+  document.getElementById("optStripEmpty").addEventListener("change", render);
+  document.getElementById("optStripEmptyCols").addEventListener("change", render);
+  document.getElementById("optEmptyFill").addEventListener("input", render);
+
+  document.getElementById("copyBtn").addEventListener("click", copyMd);
+  document.getElementById("downloadBtn").addEventListener("click", downloadMd);
+
+  // ===== File Handling =====
+  function handleFile(file) {
+    fileName = file.name.replace(/\.(xlsx|xls|csv)$/i, "");
+    var reader = new FileReader();
+
+    reader.onload = function(e) {
+      try {
+        var data = new Uint8Array(e.target.result);
+        workbook = XLSX.read(data, { type: "array", cellDates: true });
+        fileNameEl.textContent = file.name;
+        dropzone.style.display = "none";
+        toolbar.style.display = "flex";
+        optionsPanel.style.display = "flex";
+        outputArea.style.display = "grid";
+
+        renderSheetTabs();
+
+        if (workbook.SheetNames.length > 0) {
+          selectSheet(workbook.SheetNames[0]);
+        }
+        showToast("文件加载成功", "success");
+      } catch (err) {
+        showToast("解析失败: " + err.message, "error");
+      }
+    };
+
+    reader.onerror = function() {
+      showToast("文件读取失败", "error");
+    };
+
+    reader.readAsArrayBuffer(file);
+  }
+
+  // ===== Sheet Tabs =====
+  function renderSheetTabs() {
+    sheetTabs.innerHTML = "";
+    sheetTabs.style.display = workbook.SheetNames.length > 1 ? "flex" : "none";
+
+    workbook.SheetNames.forEach(function(name) {
+      var tab = document.createElement("div");
+      tab.className = "sheet-tab";
+      tab.textContent = name;
+      tab.addEventListener("click", function() { selectSheet(name); });
+      sheetTabs.appendChild(tab);
+    });
+  }
+
+  function selectSheet(name) {
+    currentSheet = name;
+    var tabs = sheetTabs.querySelectorAll(".sheet-tab");
+    tabs.forEach(function(tab) {
+      tab.classList.toggle("active", tab.textContent === name);
+    });
+
+    var sheet = workbook.Sheets[name];
+    // `blankrows: true` + `defval: ""` so empty cells inside the used
+    // range become "" (instead of being dropped by SheetJS), which
+    // keeps each row the same length. Rows that are entirely empty
+    // still get removed here (stripEmpty) or kept (whitespace-only
+    // rows are caught by the String(cell).trim() check).
+    currentData = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: "",
+      raw: false,
+    });
+
+    render();
+  }
+
+  // ===== Conversion =====
+  function escapeMd(text) {
+    if (text === null || text === undefined) return "";
+    return String(text)
+      .replace(/\|/g, "\\|")
+      .replace(/\r?\n/g, " ")
+      .trim();
+  }
+
+  function formatDate(d) {
+    if (!(d instanceof Date) || isNaN(d)) return "";
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    var h = String(d.getHours()).padStart(2, "0");
+    var min = String(d.getMinutes()).padStart(2, "0");
+    if (h === "00" && min === "00") return y + "-" + m + "-" + day;
+    return y + "-" + m + "-" + day + " " + h + ":" + min;
+  }
+
+  function processCell(val) {
+    if (val === null || val === undefined || val === "") return "";
+    if (val instanceof Date) return formatDate(val);
+    return escapeMd(val);
+  }
+
+  function render() {
+    if (!currentData || currentData.length === 0) {
+      mdSource.textContent = "（空表）";
+      mdSource.classList.add("empty");
+      mdPreview.classList.add("empty");
+      mdPreview.innerHTML = "（空表）";
+      statsBar.innerHTML = "";
+      return;
+    }
+
+    var useHeader = document.getElementById("optHeader").checked;
+    var align = document.getElementById("optAlign").value;
+    var stripEmpty = document.getElementById("optStripEmpty").checked;
+    var stripEmptyCols = document.getElementById("optStripEmptyCols").checked;
+    var emptyFill = document.getElementById("optEmptyFill").value;
+
+    var rows = currentData.slice();
+
+    // SheetJS (raw:false) turns date cells into locale strings like "7/4/26" (MINE),
+    // which is useless in output. Normalize recognizable MINE-formatted dates back
+    // to YYYY-MM-DD[/HH:mm] with local-time semantics.
+    var MINE_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+([01]?\d|2[0-3]):([0-5]\d))?$/;
+    function normalizeMineDate(s) {
+      var m = MINE_DATE_RE.exec(s);
+      if (!m) return s;
+      var mo = +m[1], d = +m[2];
+      if (mo < 1 || mo > 12 || d < 1 || d > 31) return s;
+      var y = +m[3];
+      if (y < 100) y += y < 80 ? 2000 : 1900;
+      var pad = function(n) { return String(n).padStart(2, "0"); };
+      var res = y + "-" + pad(mo) + "-" + pad(d);
+      if (m[4] !== undefined) res += " " + pad(+m[4]) + ":" + m[5];
+      return res;
+    }
+
+    // Raw cell values (pre-stringification), same shape as `rows`.
+    var rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[currentSheet], {
+      header: 1, defval: "", raw: true
+    });
+
+    // Blank rows: sheet_to_json already skips fully-empty rows when
+    // `blankrows: false`. The remaining check handles rows that are empty
+    // only after column filtering (handled later) and, critically, rows
+    // consisting solely of whitespace strings.
+    if (stripEmpty) {
+      var rowKeep = rows.map(function(row) {
+        return row.some(function(cell) {
+          return cell !== null && cell !== undefined && String(cell).trim() !== "";
+        });
+      });
+      rows = rows.filter(function(_, i) { return rowKeep[i]; });
+      rawRows = rawRows.filter(function(_, i) { return rowKeep[i]; });
+    }
+
+    if (rows.length === 0) {
+      mdSource.textContent = "（无数据）";
+      mdSource.classList.add("empty");
+      mdPreview.innerHTML = "（无数据）";
+      mdPreview.classList.add("empty");
+      statsBar.innerHTML = "";
+      return;
+    }
+
+    // Determine column count
+    var maxCols = 0;
+    rows.forEach(function(row) {
+      if (row.length > maxCols) maxCols = row.length;
+    });
+
+    // Strip empty columns
+    var colKeep = [];
+    if (stripEmptyCols) {
+      for (var c = 0; c < maxCols; c++) {
+        var hasData = false;
+        for (var r = 0; r < rows.length; r++) {
+          var cellVal = rows[r][c];
+          if (cellVal !== null && cellVal !== undefined && String(cellVal).trim() !== "") {
+            hasData = true;
+            break;
+          }
+        }
+        colKeep.push(hasData);
+      }
+    } else {
+      for (var c2 = 0; c2 < maxCols; c2++) colKeep.push(true);
+    }
+
+    var keptColIndices = [];
+    for (var i = 0; i < colKeep.length; i++) {
+      if (colKeep[i]) keptColIndices.push(i);
+    }
+
+    if (keptColIndices.length === 0) {
+      mdSource.textContent = "（无有效列）";
+      mdSource.classList.add("empty");
+      mdPreview.innerHTML = "（无有效列）";
+      mdPreview.classList.add("empty");
+      statsBar.innerHTML = "";
+      return;
+    }
+
+    // Process rows
+    var processed = rows.map(function(row, ri) {
+      return keptColIndices.map(function(colIdx) {
+        var v = row[colIdx];
+        if (v instanceof Date) v = formatDate(v);
+        else if (rawRows[ri] && typeof v === "string" && MINE_DATE_RE.test(v)) {
+          // locale-formatted date cell → normalize to ISO
+          v = normalizeMineDate(v);
+        }
+        var val = processCell(v);
+        return val === "" ? (emptyFill || "") : val;
+      });
+    });
+
+    // Split header
+    var header = useHeader ? processed[0] : null;
+    var dataRows = useHeader ? processed.slice(1) : processed;
+    var colCount = keptColIndices.length;
+
+    // If no header, generate one
+    if (!header) {
+      header = [];
+      for (var h = 0; h < colCount; h++) header.push("列 " + (h + 1));
+    }
+
+    // Build Markdown
+    var md = "";
+
+    // Table title
+    md += "### " + (currentSheet || fileName) + "\n\n";
+
+    // Header row
+    md += "| " + header.join(" | ") + " |\n";
+
+    // Separator with alignment
+    var sepAlign = {
+      left: ":---",
+      center: ":---:",
+      right: "---:",
+    };
+    var sep = sepAlign[align] || "---";
+    var sepParts = [];
+    for (var s = 0; s < colCount; s++) sepParts.push(sep);
+    md += "| " + sepParts.join(" | ") + " |\n";
+
+    // Data rows
+    dataRows.forEach(function(row) {
+      md += "| " + row.join(" | ") + " |\n";
+    });
+
+    // Render source
+    mdSource.textContent = md;
+    mdSource.classList.remove("empty");
+
+    // Render preview
+    renderPreview(header, dataRows, align);
+    mdPreview.classList.remove("empty");
+
+    // Stats
+    statsBar.innerHTML =
+      "<span>📄 工作表: " + (currentSheet || "-") + "</span>" +
+      "<span>📊 " + (dataRows.length + 1) + " 行 × " + colCount + " 列</span>" +
+      "<span>📝 数据行: " + dataRows.length + "</span>";
+  }
+
+  function renderPreview(header, dataRows, align) {
+    var html = '<table>';
+    var alignStyle = align === "center" ? "center" : align === "right" ? "right" : "left";
+
+    html += "<thead><tr>";
+    header.forEach(function(h) {
+      html += "<th>" + escapeHtml(h) + "</th>";
+    });
+    html += "</tr></thead><tbody>";
+
+    dataRows.forEach(function(row) {
+      html += "<tr>";
+      row.forEach(function(cell) {
+        html += '<td style="text-align:' + alignStyle + '">' + escapeHtml(cell) + "</td>";
+      });
+      html += "</tr>";
+    });
+
+    html += "</tbody></table>";
+    mdPreview.innerHTML = html;
+  }
+
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.textContent = text === null || text === undefined ? "" : String(text);
+    return div.innerHTML;
+  }
+
+  // ===== Actions =====
+  function copyMd() {
+    var md = mdSource.textContent;
+    if (!md || mdSource.classList.contains("empty")) {
+      showToast("没有可复制的内容", "error");
+      return;
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(function() {
+        showToast("已复制到剪贴板", "success");
+      }).catch(function() {
+        fallbackCopy(md);
+      });
+    } else {
+      fallbackCopy(md);
+    }
+  }
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      showToast("已复制到剪贴板", "success");
+    } catch (e) {
+      showToast("复制失败", "error");
+    }
+    document.body.removeChild(ta);
+  }
+
+  function downloadMd() {
+    var md = mdSource.textContent;
+    if (!md || mdSource.classList.contains("empty")) {
+      showToast("没有可下载的内容", "error");
+      return;
+    }
+
+    var blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = (fileName || "output") + "_" + (currentSheet || "sheet") + ".md";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("已下载 " + a.download, "success");
+  }
+
+  // ===== Clear =====
+  function clearAll() {
+    workbook = null;
+    currentSheet = null;
+    currentData = null;
+    fileName = "";
+    fileInput.value = "";
+    dropzone.style.display = "block";
+    toolbar.style.display = "none";
+    sheetTabs.style.display = "none";
+    sheetTabs.innerHTML = "";
+    optionsPanel.style.display = "none";
+    outputArea.style.display = "none";
+    mdSource.textContent = "转换结果将显示在这里";
+    mdSource.classList.add("empty");
+    mdPreview.innerHTML = "预览将显示在这里";
+    mdPreview.classList.add("empty");
+    statsBar.innerHTML = "";
+  }
+
+  // ===== Toast =====
+  var toastTimer = null;
+  function showToast(msg, type) {
+    toast.textContent = msg;
+    toast.className = "toast show" + (type ? " " + type : "");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() {
+      toast.classList.remove("show");
+    }, 2500);
+  }
+})();
+</script>
+</body>
+</html>
