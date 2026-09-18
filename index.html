@@ -4,7 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Excel → Markdown 转换器</title>
+<meta name="description" content="Excel/CSV → Markdown 在线转换器，支持多 Sheet 合并导出、ZIP 打包、换行模式选择，纯本地处理，数据不上传。">
+<meta name="keywords" content="excel, markdown, converter, xlsx, csv, 表格转换, markdown导出">
+<meta property="og:title" content="Excel → Markdown 转换器">
+<meta property="og:description" content="支持 .xlsx / .xls / .csv，多 Sheet 合并/ZIP 导出，纯本地处理，数据不上传。">
+<meta property="og:type" content="website">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
 :root {
   --primary: #4a90d9;
@@ -343,6 +349,25 @@ body {
       <label>空单元格填充:</label>
       <input type="text" id="optEmptyFill" value="-" style="width:40px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px">
     </div>
+    <div class="option-group">
+      <input type="checkbox" id="optMergeAll">
+      <label for="optMergeAll">全文件下载</label>
+    </div>
+    <div class="option-group" id="multiSheetGroup" style="display:none">
+      <label>多Sheet输出:</label>
+      <select id="optMultiSheet">
+        <option value="combined">合并为一个文件</option>
+        <option value="separate">每个Sheet单独文件 (ZIP)</option>
+      </select>
+    </div>
+    <div class="option-group">
+      <label>换行导出:</label>
+      <select id="optLineBreak">
+        <option value="br">&lt;br&gt; 标签</option>
+        <option value="plain">纯文本（/ 分隔）</option>
+        <option value="code">代码块（保留换行）</option>
+      </select>
+    </div>
   </div>
 
   <!-- Output -->
@@ -353,6 +378,7 @@ body {
         <div class="actions">
           <button class="action-btn" id="copyBtn">📋 复制</button>
           <button class="action-btn primary" id="downloadBtn">⬇ 下载 .md</button>
+          <button class="action-btn primary" id="downloadAllBtn" style="display:none">⬇ 下载全部</button>
         </div>
       </div>
       <div class="md-source empty" id="mdSource">转换结果将显示在这里</div>
@@ -375,7 +401,6 @@ body {
 
   var workbook = null;
   var currentSheet = null;
-  var currentData = null;
   var fileName = "";
 
   // ===== Elements =====
@@ -418,9 +443,20 @@ body {
   document.getElementById("optStripEmpty").addEventListener("change", render);
   document.getElementById("optStripEmptyCols").addEventListener("change", render);
   document.getElementById("optEmptyFill").addEventListener("input", render);
+  document.getElementById("optLineBreak").addEventListener("change", render);
+
+  document.getElementById("optMergeAll").addEventListener("change", function() {
+    var allBtn = document.getElementById("downloadAllBtn");
+    var multiGroup = document.getElementById("multiSheetGroup");
+    var isMulti = workbook && workbook.SheetNames.length > 1;
+    // Show "下载全部" button and "多Sheet输出" selector only when checked AND multi-sheet
+    allBtn.style.display = this.checked && isMulti ? "" : "none";
+    multiGroup.style.display = this.checked && isMulti ? "flex" : "none";
+  });
 
   document.getElementById("copyBtn").addEventListener("click", copyMd);
   document.getElementById("downloadBtn").addEventListener("click", downloadMd);
+  document.getElementById("downloadAllBtn").addEventListener("click", downloadAll);
 
   // ===== File Handling =====
   function handleFile(file) {
@@ -458,7 +494,14 @@ body {
   // ===== Sheet Tabs =====
   function renderSheetTabs() {
     sheetTabs.innerHTML = "";
-    sheetTabs.style.display = workbook.SheetNames.length > 1 ? "flex" : "none";
+    var multiSheet = workbook.SheetNames.length > 1;
+    sheetTabs.style.display = multiSheet ? "flex" : "none";
+
+    // "全文件下载" 选项和"下载全部"按钮只在多 sheet 时显示
+    var mergeAll = document.getElementById("optMergeAll");
+    mergeAll.closest(".option-group").style.display = multiSheet ? "flex" : "none";
+    document.getElementById("multiSheetGroup").style.display = "none";
+    document.getElementById("downloadAllBtn").style.display = "none";
 
     workbook.SheetNames.forEach(function(name) {
       var tab = document.createElement("div");
@@ -475,29 +518,22 @@ body {
     tabs.forEach(function(tab) {
       tab.classList.toggle("active", tab.textContent === name);
     });
-
-    var sheet = workbook.Sheets[name];
-    // `blankrows: true` + `defval: ""` so empty cells inside the used
-    // range become "" (instead of being dropped by SheetJS), which
-    // keeps each row the same length. Rows that are entirely empty
-    // still get removed here (stripEmpty) or kept (whitespace-only
-    // rows are caught by the String(cell).trim() check).
-    currentData = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      defval: "",
-      raw: false,
-    });
-
+    // Data is read inside buildSheetMd(); here we just mark active and re-render.
     render();
   }
 
   // ===== Conversion =====
-  function escapeMd(text) {
+  // mode: "br"    → <br>（HTML 渲染，GitHub/Obsidian/Typora 完美）
+  //       "plain"  → " / "（纯文本，LLM 解析友好，token 最少）
+  //       "code"   → \n 保留在单元格内，整表包在 ``` 代码块里（保留原始多行文本）
+  function escapeMd(text, mode) {
     if (text === null || text === undefined) return "";
-    return String(text)
-      .replace(/\|/g, "\\|")
-      .replace(/\r?\n/g, " ")
-      .trim();
+    var s = String(text).trim();
+    var breakRepl = mode === "plain" ? " / " : mode === "code" ? "\n" : "<br>";
+    s = s.replace(/\r\n|\n|\r/g, breakRepl);
+    // 代码块里管道符原样显示，不转义；其他模式转义防止破坏表格结构
+    if (mode !== "code") s = s.replace(/\|/g, "\\|");
+    return s;
   }
 
   function formatDate(d) {
@@ -511,56 +547,28 @@ body {
     return y + "-" + m + "-" + day + " " + h + ":" + min;
   }
 
-  function processCell(val) {
+  function processCell(val, mode) {
     if (val === null || val === undefined || val === "") return "";
     if (val instanceof Date) return formatDate(val);
-    return escapeMd(val);
+    return escapeMd(val, mode);
   }
 
-  function render() {
-    if (!currentData || currentData.length === 0) {
-      mdSource.textContent = "（空表）";
-      mdSource.classList.add("empty");
-      mdPreview.classList.add("empty");
-      mdPreview.innerHTML = "（空表）";
-      statsBar.innerHTML = "";
-      return;
-    }
+  // Build the markdown string for a single sheet.
+  // Returns { md, header, dataRows, colCount, mode } so render() can also use it for the preview.
+  function buildSheetMd(sheetName) {
+    var sheet = workbook.Sheets[sheetName];
+    var data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    var rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
 
     var useHeader = document.getElementById("optHeader").checked;
     var align = document.getElementById("optAlign").value;
     var stripEmpty = document.getElementById("optStripEmpty").checked;
     var stripEmptyCols = document.getElementById("optStripEmptyCols").checked;
     var emptyFill = document.getElementById("optEmptyFill").value;
+    var mode = document.getElementById("optLineBreak").value;
 
-    var rows = currentData.slice();
+    var rows = data.slice();
 
-    // SheetJS (raw:false) turns date cells into locale strings like "7/4/26" (MINE),
-    // which is useless in output. Normalize recognizable MINE-formatted dates back
-    // to YYYY-MM-DD[/HH:mm] with local-time semantics.
-    var MINE_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+([01]?\d|2[0-3]):([0-5]\d))?$/;
-    function normalizeMineDate(s) {
-      var m = MINE_DATE_RE.exec(s);
-      if (!m) return s;
-      var mo = +m[1], d = +m[2];
-      if (mo < 1 || mo > 12 || d < 1 || d > 31) return s;
-      var y = +m[3];
-      if (y < 100) y += y < 80 ? 2000 : 1900;
-      var pad = function(n) { return String(n).padStart(2, "0"); };
-      var res = y + "-" + pad(mo) + "-" + pad(d);
-      if (m[4] !== undefined) res += " " + pad(+m[4]) + ":" + m[5];
-      return res;
-    }
-
-    // Raw cell values (pre-stringification), same shape as `rows`.
-    var rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[currentSheet], {
-      header: 1, defval: "", raw: true
-    });
-
-    // Blank rows: sheet_to_json already skips fully-empty rows when
-    // `blankrows: false`. The remaining check handles rows that are empty
-    // only after column filtering (handled later) and, critically, rows
-    // consisting solely of whitespace strings.
     if (stripEmpty) {
       var rowKeep = rows.map(function(row) {
         return row.some(function(cell) {
@@ -571,32 +579,18 @@ body {
       rawRows = rawRows.filter(function(_, i) { return rowKeep[i]; });
     }
 
-    if (rows.length === 0) {
-      mdSource.textContent = "（无数据）";
-      mdSource.classList.add("empty");
-      mdPreview.innerHTML = "（无数据）";
-      mdPreview.classList.add("empty");
-      statsBar.innerHTML = "";
-      return;
-    }
+    if (rows.length === 0) return null;
 
-    // Determine column count
     var maxCols = 0;
-    rows.forEach(function(row) {
-      if (row.length > maxCols) maxCols = row.length;
-    });
+    rows.forEach(function(row) { if (row.length > maxCols) maxCols = row.length; });
 
-    // Strip empty columns
     var colKeep = [];
     if (stripEmptyCols) {
       for (var c = 0; c < maxCols; c++) {
         var hasData = false;
         for (var r = 0; r < rows.length; r++) {
           var cellVal = rows[r][c];
-          if (cellVal !== null && cellVal !== undefined && String(cellVal).trim() !== "") {
-            hasData = true;
-            break;
-          }
+          if (cellVal !== null && cellVal !== undefined && String(cellVal).trim() !== "") { hasData = true; break; }
         }
         colKeep.push(hasData);
       }
@@ -605,98 +599,100 @@ body {
     }
 
     var keptColIndices = [];
-    for (var i = 0; i < colKeep.length; i++) {
-      if (colKeep[i]) keptColIndices.push(i);
-    }
+    for (var i = 0; i < colKeep.length; i++) { if (colKeep[i]) keptColIndices.push(i); }
+    if (keptColIndices.length === 0) return null;
 
-    if (keptColIndices.length === 0) {
-      mdSource.textContent = "（无有效列）";
-      mdSource.classList.add("empty");
-      mdPreview.innerHTML = "（无有效列）";
-      mdPreview.classList.add("empty");
-      statsBar.innerHTML = "";
-      return;
-    }
-
-    // Process rows
     var processed = rows.map(function(row, ri) {
       return keptColIndices.map(function(colIdx) {
         var v = row[colIdx];
-        if (v instanceof Date) v = formatDate(v);
-        else if (rawRows[ri] && typeof v === "string" && MINE_DATE_RE.test(v)) {
-          // locale-formatted date cell → normalize to ISO
-          v = normalizeMineDate(v);
-        }
-        var val = processCell(v);
+        var raw = rawRows[ri] ? rawRows[ri][colIdx] : undefined;
+        if (raw instanceof Date) v = formatDate(raw);
+        var val = processCell(v, mode);
         return val === "" ? (emptyFill || "") : val;
       });
     });
 
-    // Split header
+    var colCount = keptColIndices.length;
     var header = useHeader ? processed[0] : null;
     var dataRows = useHeader ? processed.slice(1) : processed;
-    var colCount = keptColIndices.length;
-
-    // If no header, generate one
     if (!header) {
       header = [];
       for (var h = 0; h < colCount; h++) header.push("列 " + (h + 1));
     }
 
-    // Build Markdown
-    var md = "";
-
-    // Table title
-    md += "### " + (currentSheet || fileName) + "\n\n";
-
-    // Header row
+    var isCode = mode === "code";
+    var md = "### " + sheetName + "\n\n";
+    if (isCode) md += "```\n";
     md += "| " + header.join(" | ") + " |\n";
-
-    // Separator with alignment
-    var sepAlign = {
-      left: ":---",
-      center: ":---:",
-      right: "---:",
-    };
+    var sepAlign = { left: ":---", center: ":---:", right: "---:" };
     var sep = sepAlign[align] || "---";
     var sepParts = [];
     for (var s = 0; s < colCount; s++) sepParts.push(sep);
     md += "| " + sepParts.join(" | ") + " |\n";
-
-    // Data rows
     dataRows.forEach(function(row) {
       md += "| " + row.join(" | ") + " |\n";
     });
+    if (isCode) md += "```\n";
 
-    // Render source
-    mdSource.textContent = md;
-    mdSource.classList.remove("empty");
-
-    // Render preview
-    renderPreview(header, dataRows, align);
-    mdPreview.classList.remove("empty");
-
-    // Stats
-    statsBar.innerHTML =
-      "<span>📄 工作表: " + (currentSheet || "-") + "</span>" +
-      "<span>📊 " + (dataRows.length + 1) + " 行 × " + colCount + " 列</span>" +
-      "<span>📝 数据行: " + dataRows.length + "</span>";
+    return { md: md, header: header, dataRows: dataRows, colCount: colCount, mode: mode };
   }
 
-  function renderPreview(header, dataRows, align) {
+  function render() {
+    if (!workbook || !currentSheet) {
+      mdSource.textContent = "（空表）";
+      mdSource.classList.add("empty");
+      mdPreview.classList.add("empty");
+      mdPreview.innerHTML = "（空表）";
+      statsBar.innerHTML = "";
+      return;
+    }
+
+    var result = buildSheetMd(currentSheet);
+    if (!result) {
+      mdSource.textContent = "（无数据）";
+      mdSource.classList.add("empty");
+      mdPreview.classList.add("empty");
+      mdPreview.innerHTML = "（无数据）";
+      statsBar.innerHTML = "";
+      return;
+    }
+
+    mdSource.textContent = result.md;
+    mdSource.classList.remove("empty");
+
+    var align = document.getElementById("optAlign").value;
+    renderPreview(result.header, result.dataRows, align, result.mode);
+    mdPreview.classList.remove("empty");
+
+    statsBar.innerHTML =
+      "<span>📄 工作表: " + (currentSheet || "-") + "</span>" +
+      "<span>📊 " + (result.dataRows.length + 1) + " 行 × " + result.colCount + " 列</span>" +
+      "<span>📝 数据行: " + result.dataRows.length + "</span>";
+  }
+
+  function renderPreview(header, dataRows, align, mode) {
     var html = '<table>';
     var alignStyle = align === "center" ? "center" : align === "right" ? "right" : "left";
 
+    // code 模式：用 pre-wrap 保留单元格内的真实换行（与导出的 ``` 代码块一致）
+    var preWrap = mode === "code" ? ';white-space:pre-wrap;font-family:Consolas,monospace;font-size:12px' : '';
+
+    function previewCell(text) {
+      var escaped = escapeHtml(text);
+      if (mode === "br") escaped = escaped.replace(/&lt;br&gt;/g, "<br>");
+      return escaped;
+    }
+
     html += "<thead><tr>";
     header.forEach(function(h) {
-      html += "<th>" + escapeHtml(h) + "</th>";
+      html += "<th>" + previewCell(h) + "</th>";
     });
     html += "</tr></thead><tbody>";
 
     dataRows.forEach(function(row) {
       html += "<tr>";
       row.forEach(function(cell) {
-        html += '<td style="text-align:' + alignStyle + '">' + escapeHtml(cell) + "</td>";
+        html += '<td style="text-align:' + alignStyle + preWrap + '">' + previewCell(cell) + "</td>";
       });
       html += "</tr>";
     });
@@ -752,26 +748,80 @@ body {
       showToast("没有可下载的内容", "error");
       return;
     }
+    triggerDownload((fileName || "output") + "_" + (currentSheet || "sheet") + ".md", md);
+  }
 
-    var blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+  function downloadAll() {
+    if (!workbook) {
+      showToast("没有可下载的内容", "error");
+      return;
+    }
+    var multiMode = document.getElementById("optMultiSheet").value;
+
+    if (multiMode === "combined") {
+      var allMd = "";
+      var sheetNames = workbook.SheetNames;
+      for (var i = 0; i < sheetNames.length; i++) {
+        var result = buildSheetMd(sheetNames[i]);
+        if (!result) {
+          allMd += "### " + sheetNames[i] + "\n\n（空表）\n";
+        } else {
+          allMd += result.md;
+        }
+        if (i < sheetNames.length - 1) allMd += "\n";
+      }
+      triggerDownload((fileName || "output") + ".md", allMd);
+    } else {
+      // ZIP: one .md per sheet
+      var zip = new JSZip();
+      var usedNames = {};
+      workbook.SheetNames.forEach(function(sheetName) {
+        var result = buildSheetMd(sheetName);
+        var content = result ? result.md : "### " + sheetName + "\n\n（空表）\n";
+        var safeName = sheetName.replace(/[\\/:*?"<>|]/g, "_");
+        var base = (fileName || "output") + "_" + safeName + ".md";
+        var finalName = base, counter = 1;
+        while (usedNames[finalName]) {
+          finalName = base.replace(".md", "_" + counter + ".md");
+          counter++;
+        }
+        usedNames[finalName] = true;
+        zip.file(finalName, content);
+      });
+      zip.generateAsync({ type: "blob" }).then(function(blob) {
+        triggerDownloadBlob((fileName || "output") + ".zip", blob);
+      }).catch(function(err) {
+        showToast("打包失败: " + err.message, "error");
+      });
+    }
+  }
+
+  function triggerDownload(filename, text) {
+    var blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    triggerDownloadBlob(filename, blob);
+  }
+
+  function triggerDownloadBlob(filename, blob) {
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
     a.href = url;
-    a.download = (fileName || "output") + "_" + (currentSheet || "sheet") + ".md";
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast("已下载 " + a.download, "success");
+    showToast("已下载 " + filename, "success");
   }
 
   // ===== Clear =====
   function clearAll() {
     workbook = null;
     currentSheet = null;
-    currentData = null;
     fileName = "";
     fileInput.value = "";
+    document.getElementById("optMergeAll").checked = false;
+    document.getElementById("multiSheetGroup").style.display = "none";
+    document.getElementById("downloadAllBtn").style.display = "none";
     dropzone.style.display = "block";
     toolbar.style.display = "none";
     sheetTabs.style.display = "none";
